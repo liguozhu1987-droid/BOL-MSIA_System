@@ -1,0 +1,314 @@
+/* ============================================================
+   MSIA 审核管理系统 — 全局设计系统
+   设计方向: Soft-Tech Business (柔和科技商务风)
+   原则: 浅色主题 · 大圆角 · 多层柔和阴影 · 精致玻璃质感 · 克制的科技点缀
+   ============================================================ */
+
+/* ---------- 设计令牌 ---------- */
+:root {
+  /* 品牌色: 深湖蓝 — 沉稳、专业、可信赖 */
+  --tech-primary: #2E5CE6;
+  --tech-primary-deep: #1E46C0;
+  --tech-primary-light: #6B93F0;
+  --tech-primary-soft: rgba(46, 92, 230, 0.08);
+
+  /* 辅助色: 青碧色 — 数据与活力的点缀 */
+  --tech-cyan: #0FB5BA;
+  --tech-teal: #14B8A6;
+  --tech-cyan-glow: rgba(15, 181, 186, 0.28);
+  --tech-blue-glow: rgba(46, 92, 230, 0.22);
+
+  /* 表面: 云雾白 — 柔和的层次 */
+  --tech-surface: rgba(255, 255, 255, 0.78);
+  --tech-surface-strong: rgba(255, 255, 255, 0.92);
+  --tech-bg: #F4F7FC;
+  --tech-bg-deep: #EDF2FA;
+
+  /* 边框: 低饱和蓝灰, 柔和不突兀 */
+  --tech-border: rgba(46, 92, 230, 0.10);
+  --tech-border-strong: rgba(46, 92, 230, 0.18);
+  --tech-grid-line: rgba(46, 92, 230, 0.035);
+
+  /* 文字 */
+  --tech-text: #1B2540;
+  --tech-text-secondary: #5D6B8A;
+  --tech-text-faint: #93A0BC;
+
+  /* 字体 */
+  --tech-font-mono: 'Cascadia Code', 'Fira Code', 'SF Mono', Consolas, 'Courier New', monospace;
+  --tech-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+
+  /* 圆角体系 */
+  --tech-radius: 10px;
+  --tech-radius-lg: 14px;
+  --tech-radius-xl: 18px;
+
+  /* 阴影: 多层柔和, 大扩散低浓度 */
+  --tech-shadow-xs: 0 1px 2px rgba(27, 46, 116, 0.04);
+  --tech-shadow-sm: 0 1px 3px rgba(27, 46, 116, 0.05), 0 2px 8px rgba(27, 46, 116, 0.04);
+  --tech-shadow-md: 0 2px 6px rgba(27, 46, 116, 0.05), 0 8px 24px rgba(27, 46, 116, 0.07);
+  --tech-shadow-lg: 0 4px 12px rgba(27, 46, 116, 0.06), 0 16px 48px rgba(27, 46, 116, 0.10);
+  --tech-shadow-glow: 0 6px 24px rgba(46, 92, 230, 0.14);
+
+  /* 动效缓动: 柔和出场 */
+  --tech-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tech-ease-in-out: cubic-bezier(0.45, 0, 0.25, 1);
+}
+
+/* ---------- 全局重置 ---------- */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--tech-font-sans);
+  color: var(--tech-text);
+  background:
+    radial-gradient(ellipse 60% 40% at 85% -5%, rgba(15, 181, 186, 0.05) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 35% at 8% 0%, rgba(46, 92, 230, 0.05) 0%, transparent 70%),
+    var(--tech-bg);
+  background-attachment: fixed;
+}
+
+/* ---------- 自定义滚动条: 柔和胶囊形 ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(46, 92, 230, 0.16);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.25s var(--tech-ease);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(46, 92, 230, 0.32);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- 等宽数字: 数据可读性 ---------- */
+.tech-mono {
+  font-family: var(--tech-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* 统计数值/表格数字统一等宽数字对齐 (非等宽字体场景下仍保持列对齐) */
+.ant-statistic-content,
+.ant-table td,
+.ant-tag {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 动效库 ---------- */
+
+/* 呼吸脉冲: 柔和的生命感指示 */
+@keyframes tech-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--tech-blue-glow); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 6px transparent; }
+}
+
+/* 流光扫描: 顶部微光缓移 */
+@keyframes tech-scan {
+  0% { transform: translateX(-100%); opacity: 0; }
+  40% { opacity: 0.8; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+
+/* 渐入上浮: 页面内容的柔和出场 */
+@keyframes tech-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 渐入缩放 */
+@keyframes tech-fade-scale {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 光泽流动: 渐变上的高光移动 */
+@keyframes tech-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* 数据点闪烁 */
+@keyframes tech-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* 浮动漂移: 背景光斑的缓慢运动 */
+@keyframes tech-float {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  50% { transform: translateY(-18px) translateX(8px); }
+}
+
+/* ---------- 玻璃拟态: 更柔和的磨砂 ---------- */
+.tech-glass {
+  background: var(--tech-surface);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid var(--tech-border);
+}
+
+.tech-glass-strong {
+  background: var(--tech-surface-strong);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--tech-border);
+}
+
+/* ---------- 内容区氛围: 柔光渐变而非锐利网格 ---------- */
+.msia-content-bg {
+  position: relative;
+}
+.msia-content-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--tech-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--tech-grid-line) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, black 0%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, black 0%, transparent 75%);
+  pointer-events: none;
+  z-index: 0;
+}
+.msia-content-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- 装饰角标: 柔和圆点替代锐角 ---------- */
+.tech-corner {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+  opacity: 0.55;
+}
+.tech-corner-tl { top: 10px; left: 10px; border-top: 2px solid var(--tech-cyan); border-left: 2px solid var(--tech-cyan); border-top-left-radius: 6px; }
+.tech-corner-tr { top: 10px; right: 10px; border-top: 2px solid var(--tech-cyan); border-right: 2px solid var(--tech-cyan); border-top-right-radius: 6px; }
+.tech-corner-bl { bottom: 10px; left: 10px; border-bottom: 2px solid var(--tech-cyan); border-left: 2px solid var(--tech-cyan); border-bottom-left-radius: 6px; }
+.tech-corner-br { bottom: 10px; right: 10px; border-bottom: 2px solid var(--tech-cyan); border-right: 2px solid var(--tech-cyan); border-bottom-right-radius: 6px; }
+
+/* ---------- 卡片悬浮: 柔和升浮 ---------- */
+.tech-card-hover {
+  transition: transform 0.35s var(--tech-ease), box-shadow 0.35s var(--tech-ease), border-color 0.35s var(--tech-ease);
+}
+.tech-card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--tech-shadow-lg);
+  border-color: var(--tech-border-strong) !important;
+}
+
+/* ---------- 顶部流光: 卡片顶部的柔和光带 ---------- */
+.tech-scanline {
+  position: relative;
+  overflow: hidden;
+}
+.tech-scanline::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, var(--tech-primary-light) 30%, var(--tech-cyan) 50%, var(--tech-primary-light) 70%, transparent 100%);
+  opacity: 0.5;
+  animation: tech-scan 6s var(--tech-ease-in-out) infinite;
+  pointer-events: none;
+}
+
+/* ---------- 评分改进分析: 首次/整改后评分行高亮 ---------- */
+.history-highlight-row > td {
+  background: rgba(46, 92, 230, 0.09) !important;
+}
+.history-highlight-row > td:first-child {
+  box-shadow: inset 3px 0 0 0 #2E5CE6;
+}
+
+/* ---------- 数据徽标 ---------- */
+.tech-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  font-family: var(--tech-font-mono);
+  background: linear-gradient(135deg, rgba(46, 92, 230, 0.07) 0%, rgba(15, 181, 186, 0.09) 100%);
+  border: 1px solid rgba(15, 181, 186, 0.25);
+  color: var(--tech-teal);
+}
+
+/* ---------- 侧边栏菜单: 柔和选中态 (侧边栏色调加深后同步增强) ---------- */
+.tech-sider-menu .ant-menu-item {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+}
+.tech-sider-menu .ant-menu-item-selected {
+  background: linear-gradient(135deg, rgba(46, 92, 230, 0.16) 0%, rgba(15, 181, 186, 0.10) 100%) !important;
+}
+.tech-sider-menu .ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  background: linear-gradient(180deg, var(--tech-primary) 0%, var(--tech-cyan) 100%);
+  border-radius: 0 3px 3px 0;
+  box-shadow: 0 0 10px var(--tech-blue-glow);
+}
+
+/* ---------- 表格行悬浮 ---------- */
+.ant-table-row:hover > td {
+  transition: background 0.25s var(--tech-ease) !important;
+}
+
+/* ---------- Ant Design 覆盖 ---------- */
+
+/* Modal: 柔和磨砂 + 大圆角 */
+.ant-modal-content {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Drawer 圆角 */
+.ant-drawer-content-wrapper .ant-drawer-content {
+  border-radius: 0;
+}
+
+/* ---------- 选中文本 ---------- */
+::selection {
+  background: rgba(46, 92, 230, 0.14);
+  color: var(--tech-primary-deep);
+}
+
+/* ---------- 减少动效偏好 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

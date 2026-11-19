@@ -1,0 +1,4 @@
+# 请在此处填入你的 EdgeFn API Key
+# 将下面的 YOUR_API_KEY_HERE 替换为你的实际 API Key
+
+api_key: "sk-RIfE7nc3oI4woVeTA8A24e80E15b4e4d8c516855123b5b19"

@@ -1,0 +1,434 @@
+# -*- coding: utf-8 -*-
+"""临时脚本：向 views.py 末尾追加两个新视图"""
+import os
+
+views_path = os.path.join(os.path.dirname(__file__), 'views.py')
+
+NEW_CODE = '''
+
+# ============================================================
+# 8. BOL 全链路对比 — 全量数据（用于图表点击弹窗）
+# ============================================================
+class BolLifecycleAllView(APIView):
+    """GET /api/analytics/bol-lifecycle-all/
+
+    返回本财年所有项目的 BOL 全链路数据（不限制 Top 25），
+    用于综合看板 BOL 全链路对比图点击弹窗展示。
+    """
+
+    def get(self, request, *args, **kwargs):
+        current_year = _qint(request, 'fiscal_year')
+        if not current_year:
+            current_year = BudgetBol.objects.order_by('-fiscal_year').values_list(
+                'fiscal_year', flat=True
+            ).first() or timezone.now().year
+
+        from apps.budget_bol.models import AchievableTargetBol
+        from apps.budget_bol.cbco_models import CbcoRecord
+
+        budget_map = {}
+        for r in BudgetBol.objects.filter(
+            fiscal_year=current_year, bol_type='BUDGET'
+        ).values('project_code', 'process_type', 'budget_bol'):
+            key = (r['project_code'], r['process_type'])
+            if key not in budget_map:
+                budget_map[key] = _f(r['budget_bol'])
+
+        achievable_map = {}
+        for r in AchievableTargetBol.objects.filter(
+            fiscal_year=current_year, bol_type='ACHIEVABLE'
+        ).values('project_code', 'process_type', 'bol'):
+            key = (r['project_code'], r['process_type'])
+            if key not in achievable_map:
+                achievable_map[key] = _f(r['bol'])
+
+        target_map = {}
+        for r in AchievableTargetBol.objects.filter(
+            fiscal_year=current_year, bol_type='TARGET'
+        ).values('project_code', 'process_type', 'bol'):
+            key = (r['project_code'], r['process_type'])
+            if key not in target_map:
+                target_map[key] = _f(r['bol'])
+
+        bp_qs = BolOverViewByProcess.objects.filter(
+            hc__isnull=False, oee__isnull=False
+        ).order_by('-update_time')
+        bp_map = {}
+        for r in bp_qs.values('program_code', 'process', 'line_nr', 'hc', 'oee'):
+            key = (r['program_code'], r['process'])
+            if key not in bp_map:
+                bp_map[key] = {
+                    'hc': _f(r['hc']),
+                    'oee': _f(r['oee']),
+                    'line_nr': r['line_nr'],
+                }
+
+        bn_qs = BottleNeckCt.objects.filter(cycle_time_bottleneck__isnull=False).order_by('-update_time')
+        bn_map = {}
+        for r in bn_qs.values('project_code', 'line_nr', 'cycle_time_bottleneck'):
+            key = (r['project_code'], r['line_nr'])
+            if key not in bn_map:
+                bn_map[key] = _f(r['cycle_time_bottleneck'])
+
+        volume_map = {}
+        try:
+            for r in CbcoRecord.objects.filter(fiscal_year=current_year).values(
+                'project_code', 'annual_volume'
+            ):
+                pc = r['project_code']
+                if pc not in volume_map:
+                    volume_map[pc] = int(r['annual_volume'] or 0)
+        except Exception:
+            pass
+
+        all_keys = set(budget_map) | set(achievable_map)
+        items = []
+        for key in all_keys:
+            project_code, process_type = key
+            budget = budget_map.get(key)
+            achievable = achievable_map.get(key)
+            target = target_map.get(key)
+            bp = bp_map.get((project_code, process_type), {})
+            hc = bp.get('hc')
+            oee = bp.get('oee')
+            line_nr = bp.get('line_nr', '')
+
+            ct_actual = bn_map.get((project_code, line_nr)) if line_nr else None
+            if ct_actual is None:
+                for bn_key, bn_val in bn_map.items():
+                    if bn_key[0] == project_code:
+                        ct_actual = bn_val
+                        break
+            actual = None
+            if ct_actual is not None and hc is not None and oee is not None:
+                actual = calc_bol(ct_actual, hc, oee)
+
+            gap = None
+            if budget is not None and achievable is not None:
+                gap = round(budget - achievable, 2)
+
+            actual_ach_gap_pct = None
+            if actual is not None and achievable and achievable > 0:
+                actual_ach_gap_pct = round((actual - achievable) / achievable * 100, 1)
+
+            items.append({
+                'project_code': project_code,
+                'process_type': process_type,
+                'budget': budget,
+                'achievable': achievable,
+                'target': target,
+                'actual': actual,
+                'actual_ct': ct_actual,
+                'hc': hc,
+                'oee': oee,
+                'line_nr': line_nr,
+                'gap': gap,
+                'volume': volume_map.get(project_code, 0),
+                'actual_ach_gap_pct': actual_ach_gap_pct,
+            })
+
+        items.sort(key=lambda x: (
+            0 if x['process_type'] == 'FA' else 1,
+            -x['volume'],
+        ))
+        return Response({
+            'fiscal_year': current_year,
+            'total': len(items),
+            'items': items,
+        })
+
+
+# ============================================================
+# 9. CT 数据探索分析 — 三套 CT 对比 + 异常识别 + 改善建议
+# ============================================================
+class CtExplorationView(APIView):
+    """GET /api/analytics/ct-exploration/
+
+    三套 CT 对比分析：
+      1. 设计 CT（AchievableTargetBol 的 process1~5_ct 取最大值作为瓶颈 CT）
+      2. 标准 CT / SCT（BolOverView.ct，审批提交的 CT）
+      3. 实测 CT / ACT（BottleNeckCt.cycle_time_bottleneck）
+
+    异常识别规则：
+      - 差异 10-20%：WARNING（警告级）
+      - 差异 >20%：CRITICAL（严重异常）
+      - ACT < SCT：IMPROVEMENT（改善机会，可推广）
+      - ACT > SCT：DEGRADATION（恶化，需关注）
+      - 数据缺失：DATA_MISSING（数据缺口）
+    """
+
+    WARNING_THRESHOLD = 10.0
+    CRITICAL_THRESHOLD = 20.0
+
+    def get(self, request, *args, **kwargs):
+        current_year = _qint(request, 'fiscal_year')
+        if not current_year:
+            current_year = BudgetBol.objects.order_by('-fiscal_year').values_list(
+                'fiscal_year', flat=True
+            ).first() or timezone.now().year
+
+        from apps.budget_bol.models import AchievableTargetBol
+
+        # === 1. 设计 CT（AchievableTargetBol，取 process1~5_ct 的最大值） ===
+        design_ct_map = {}
+        for r in AchievableTargetBol.objects.filter(
+            fiscal_year=current_year, bol_type='ACHIEVABLE'
+        ).values(
+            'project_code', 'process_type', 'asset',
+            'process1_ct', 'process2_ct', 'process3_ct', 'process4_ct', 'process5_ct',
+            'bol', 'oee',
+        ):
+            key = (r['project_code'], r['process_type'], r['asset'])
+            if key in design_ct_map:
+                continue
+            cts = [
+                _f(r['process1_ct']), _f(r['process2_ct']), _f(r['process3_ct']),
+                _f(r['process4_ct']), _f(r['process5_ct']),
+            ]
+            valid_cts = [c for c in cts if c is not None and c > 0]
+            design_ct = max(valid_cts) if valid_cts else None
+            design_ct_map[key] = {
+                'ct': design_ct,
+                'bol': _f(r['bol']),
+                'oee': _f(r['oee']),
+            }
+
+        # === 2. 标准 CT / SCT（BolOverView，审批通过的 CT） ===
+        sct_qs = BolOverView.objects.filter(
+            final_approve_status='Approved', ct__isnull=False
+        ).order_by('-submit_date')
+        sct_map = {}
+        for r in sct_qs.values(
+            'program_code', 'process', 'line_nr', 'ct', 'hc', 'oee', 'bol',
+            'submit_date', 'submit_user_name', 'program_name', 'customer', 'location',
+        ):
+            key = (r['program_code'], r['process'], r['line_nr'])
+            if key not in sct_map:
+                sct_map[key] = {
+                    'ct': _f(r['ct']),
+                    'hc': _f(r['hc']),
+                    'oee': _f(r['oee']),
+                    'bol': _f(r['bol']),
+                    'submit_date': r['submit_date'],
+                    'submit_user_name': r['submit_user_name'] or '',
+                    'program_name': r['program_name'] or '',
+                    'customer': r['customer'] or '',
+                    'location': normalize_plant(r['location']),
+                }
+
+        # === 3. 实测 CT / ACT（BottleNeckCt，瓶颈 CT） ===
+        act_qs = BottleNeckCt.objects.filter(cycle_time_bottleneck__isnull=False).order_by('-update_time')
+        act_map = {}
+        for r in act_qs.values(
+            'project_code', 'line_nr', 'cycle_time_bottleneck', 'company', 'project_name', 'update_time'
+        ):
+            key = (r['project_code'], r['line_nr'])
+            if key not in act_map:
+                act_map[key] = {
+                    'ct': _f(r['cycle_time_bottleneck']),
+                    'company': r['company'] or '',
+                    'project_name': r['project_name'] or '',
+                    'update_time': r['update_time'],
+                }
+
+        # === 4. 合并三套 CT ===
+        all_keys = set()
+        for k in design_ct_map:
+            all_keys.add((k[0], k[1], k[2]))
+        for k in sct_map:
+            all_keys.add((k[0], k[1], k[2]))
+
+        items = []
+        for key in all_keys:
+            project_code, process_type, line_nr = key
+
+            design_info = design_ct_map.get((project_code, process_type, line_nr))
+            if not design_info:
+                for dk, dv in design_ct_map.items():
+                    if dk[0] == project_code and dk[1] == process_type:
+                        design_info = dv
+                        break
+            design_ct = design_info['ct'] if design_info else None
+            design_bol = design_info['bol'] if design_info else None
+
+            sct_info = sct_map.get((project_code, process_type, line_nr))
+            if not sct_info:
+                for sk, sv in sct_map.items():
+                    if sk[0] == project_code and sk[1] == process_type:
+                        sct_info = sv
+                        break
+            sct = sct_info['ct'] if sct_info else None
+            sct_bol = sct_info['bol'] if sct_info else None
+            hc = sct_info['hc'] if sct_info else None
+            oee = sct_info['oee'] if sct_info else None
+
+            act_info = act_map.get((project_code, line_nr))
+            if not act_info:
+                for ak, av in act_map.items():
+                    if ak[0] == project_code:
+                        act_info = av
+                        break
+            act = act_info['ct'] if act_info else None
+
+            program_name = (sct_info or {}).get('program_name', '') or (act_info or {}).get('project_name', '')
+            customer = (sct_info or {}).get('customer', '')
+            company = (act_info or {}).get('company', '')
+            location = (sct_info or {}).get('location', company)
+            submit_date = (sct_info or {}).get('submit_date')
+            submit_user = (sct_info or {}).get('submit_user_name', '')
+            act_update = (act_info or {}).get('update_time')
+
+            # === 差异计算 ===
+            design_vs_sct_pct = self._gap_pct(design_ct, sct)
+            sct_vs_act_pct = self._gap_pct(sct, act)
+            design_vs_act_pct = self._gap_pct(design_ct, act)
+
+            # === 异常识别 ===
+            issues = []
+            recommendations = []
+            severity = 'OK'
+
+            if design_ct is None:
+                issues.append('设计CT缺失')
+                severity = self._upgrade_severity(severity, 'WARNING')
+            if sct is None:
+                issues.append('标准CT(SCT)缺失')
+                severity = self._upgrade_severity(severity, 'WARNING')
+            if act is None:
+                issues.append('实测CT(ACT)缺失')
+                severity = self._upgrade_severity(severity, 'WARNING')
+
+            if design_ct is not None and sct is not None:
+                abs_gap = abs(design_vs_sct_pct)
+                if abs_gap >= self.CRITICAL_THRESHOLD:
+                    issues.append(f'设计CT与SCT差异严重({design_vs_sct_pct:+.1f}%)')
+                    severity = self._upgrade_severity(severity, 'CRITICAL')
+                    recommendations.append('设计CT与审批CT差异过大，需核查BOL审批提交的CT是否准确')
+                elif abs_gap >= self.WARNING_THRESHOLD:
+                    issues.append(f'设计CT与SCT差异警告({design_vs_sct_pct:+.1f}%)')
+                    severity = self._upgrade_severity(severity, 'WARNING')
+
+            if sct is not None and act is not None:
+                abs_gap = abs(sct_vs_act_pct)
+                if act < sct:
+                    if abs_gap >= self.WARNING_THRESHOLD:
+                        recommendations.append(f'实测CT优于标准CT {abs_gap:.1f}%，改善经验可推广至其他产线')
+                        issues.append(f'ACT<SCT 改善机会(优{sct_vs_act_pct:.1f}%)')
+                    else:
+                        recommendations.append('实测CT略优于标准CT，运行状态良好')
+                else:
+                    if abs_gap >= self.CRITICAL_THRESHOLD:
+                        issues.append(f'实测CT严重恶化(+{sct_vs_act_pct:.1f}%)')
+                        severity = self._upgrade_severity(severity, 'CRITICAL')
+                        recommendations.append('实测CT远超标准CT，需立即排查瓶颈工位并制定改善计划')
+                    elif abs_gap >= self.WARNING_THRESHOLD:
+                        issues.append(f'实测CT恶化(+{sct_vs_act_pct:.1f}%)')
+                        severity = self._upgrade_severity(severity, 'WARNING')
+                        recommendations.append('实测CT超出标准CT，建议关注瓶颈工位效率')
+
+            if design_ct is not None and act is not None:
+                abs_gap = abs(design_vs_act_pct)
+                if abs_gap >= self.CRITICAL_THRESHOLD and act > design_ct:
+                    recommendations.append('实测CT远超设计CT，建议重新评估产线能力或更新设计基准')
+
+            if not issues:
+                issues.append('数据正常')
+                recommendations.append('三套CT一致性良好，维持当前运行标准')
+
+            items.append({
+                'project_code': project_code,
+                'program_name': program_name,
+                'customer': customer,
+                'location': location,
+                'process_type': process_type,
+                'line_nr': line_nr,
+                'design_ct': round(design_ct, 2) if design_ct else None,
+                'sct': round(sct, 2) if sct else None,
+                'act': round(act, 2) if act else None,
+                'design_bol': design_bol,
+                'sct_bol': sct_bol,
+                'hc': hc,
+                'oee': oee,
+                'design_vs_sct_pct': round(design_vs_sct_pct, 1) if design_vs_sct_pct is not None else None,
+                'sct_vs_act_pct': round(sct_vs_act_pct, 1) if sct_vs_act_pct is not None else None,
+                'design_vs_act_pct': round(design_vs_act_pct, 1) if design_vs_act_pct is not None else None,
+                'severity': severity,
+                'issues': issues,
+                'recommendations': recommendations,
+                'submit_date': submit_date.strftime('%Y-%m-%d') if submit_date else '',
+                'submit_user': submit_user,
+                'act_update': act_update.strftime('%Y-%m-%d') if act_update else '',
+            })
+
+        severity_order = {'CRITICAL': 0, 'WARNING': 1, 'OK': 2}
+        items.sort(key=lambda x: (
+            severity_order.get(x['severity'], 3),
+            -abs(x['sct_vs_act_pct'] or 0),
+        ))
+
+        total = len(items)
+        critical_count = sum(1 for i in items if i['severity'] == 'CRITICAL')
+        warning_count = sum(1 for i in items if i['severity'] == 'WARNING')
+        ok_count = sum(1 for i in items if i['severity'] == 'OK')
+        improvement_count = sum(
+            1 for i in items
+            if i['sct'] is not None and i['act'] is not None and i['act'] < i['sct']
+        )
+        degradation_count = sum(
+            1 for i in items
+            if i['sct'] is not None and i['act'] is not None and i['act'] > i['sct']
+        )
+        data_missing_count = sum(
+            1 for i in items
+            if i['design_ct'] is None or i['sct'] is None or i['act'] is None
+        )
+
+        anomaly_list = [i for i in items if i['severity'] in ('CRITICAL', 'WARNING')]
+        improvement_list = [
+            i for i in items
+            if i['sct'] is not None and i['act'] is not None and i['act'] < i['sct']
+        ]
+
+        return Response({
+            'fiscal_year': current_year,
+            'summary': {
+                'total': total,
+                'critical': critical_count,
+                'warning': warning_count,
+                'ok': ok_count,
+                'improvement': improvement_count,
+                'degradation': degradation_count,
+                'data_missing': data_missing_count,
+            },
+            'items': items,
+            'anomaly_list': anomaly_list,
+            'improvement_list': improvement_list,
+        })
+
+    @staticmethod
+    def _gap_pct(a, b):
+        """计算 a 相对 b 的差异百分比： (a-b)/b*100"""
+        if a is None or b is None or b == 0:
+            return None
+        return (a - b) / b * 100
+
+    @staticmethod
+    def _upgrade_severity(current, new):
+        """升级严重级别：CRITICAL > WARNING > OK"""
+        order = {'OK': 0, 'WARNING': 1, 'CRITICAL': 2}
+        if order.get(new, 0) > order.get(current, 0):
+            return new
+        return current
+'''
+
+with open(views_path, 'a', encoding='utf-8') as f:
+    f.write(NEW_CODE)
+
+print('Successfully appended', len(NEW_CODE), 'chars to views.py')
+
+# 验证
+with open(views_path, 'r', encoding='utf-8') as f:
+    content = f.read()
+print('Total lines now:', content.count('\n'))
+print('Contains BolLifecycleAllView:', 'BolLifecycleAllView' in content)
+print('Contains CtExplorationView:', 'CtExplorationView' in content)

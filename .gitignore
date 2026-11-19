@@ -1,0 +1,22 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# node依赖（就是这次报错的元凶！）
+node_modules/
+Claude Code/node_modules/
+
+# VSCode
+.vscode/
+.idea/
+
+# 日志、临时文件
+*.log
+*.tmp

@@ -1,0 +1,7 @@
+{
+  "HOST": "0.0.0.0",
+  "PORT": 3456,
+  "API_KEY": "sk-RIfE7nc3oI4woVeTA8A24e80E15b4e4d8c516855123b5b19",
+  "BASE_URL": "https://api.edgefn.net/v1",
+  "MODEL": "DeepSeek-V3.2"
+}

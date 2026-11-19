@@ -1,0 +1,9 @@
+{
+  "models": {
+    "deepseek-v3": {
+      "apiKey": "sk-RIfE7nc3oI4woVeTA8A24e80E15b4e4d8c516855123b5b19",
+      "baseUrl": "https://api.edgefn.net/v1"
+    }
+  },
+  "allowDangerouslySkipPermissions": true
+}

@@ -1,0 +1,575 @@
+# -*- coding: utf-8 -*-
+"""分析模块 视图：6大分析场景API
+
+跨库查询约束：
+  - hrdb 库（只读）：BolOverView（BOL更新记录）、ProgramInfo（项目主数据）、
+    RealCtExtract / RealCtExtractPerDay / BottleNeckCt（实测CT及瓶颈CT）
+  - default(CMC) 库（读写）：BudgetBol（年度预算BOL）、HighBolTracking（高BOL跟踪）
+  - Django 不支持跨库 JOIN，所有跨库数据合并均在 Python 层完成，
+    绝不使用 select_related / prefetch_related 跨库关联。
+
+概念说明（重要）：
+  - HRDB 中 CN_IE_CT_ 开头的表只采集 cycle time（CT），并不是 BOL。
+  - BOL = CT × HC × (1+1/15) / OEE / 60，计算 BOL 必须有 HC。
+  - 传感器系统只采集了 CT，没有 HC，因此无法直接换算 BOL。
+  - 本模块通过 BolOverView 中的 HC/OEE，结合 BottleNeckCt 的实测瓶颈 CT，
+    反推"由实测CT换算的BOL"（estimated_bol_from_ct），用于佐证人工提交 BOL 的合理性。
+"""
+from datetime import timedelta
+
+from django.db.models import Avg, Count, Sum
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.actual_ct.models import BottleNeckCt, RealCtExtract
+from apps.budget_bol.models import BudgetBol
+from apps.dynamic_bol.models import BolOverView
+from apps.projects.models import ProgramInfo
+from apps.tracking.models import HighBolTracking
+from bol_platform.bol_calc import calc_bol, calc_bol_gap, calc_labor_cost_gap
+
+# 默认工时单价（元/分钟），未传入 labor_rate 时使用
+DEFAULT_LABOR_RATE = 0.8
+
+
+# ============================================================
+# 工具函数
+# ============================================================
+def _f(v):
+    """安全转换 Decimal/None → float/None"""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _qstr(request, name):
+    """取查询参数，去空白；空字符串视为未提供"""
+    v = request.query_params.get(name)
+    if v is None:
+        return None
+    v = v.strip()
+    return v or None
+
+
+def _qint(request, name, default=None):
+    """取查询参数并转 int；失败或未提供返回 default"""
+    v = _qstr(request, name)
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
+
+
+def _qfloat(request, name, default=None):
+    """取查询参数并转 float；失败或未提供返回 default"""
+    v = _qstr(request, name)
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
+def _line_key(program_code, process, line_nr):
+    """统一构造 (program_code, process, line_nr) 合并键，None 归一为 ''"""
+    return (program_code or '', process or '', (line_nr or '').strip())
+
+
+def _pp_key(program_code, process):
+    """统一构造 (program_code, process) 合并键，None 归一为 ''"""
+    return (program_code or '', process or '')
+
+
+# ============================================================
+# 1. 多维度BOL对比
+# ============================================================
+class BolComparisonView(APIView):
+    """GET /api/analytics/comparison/
+
+    查询参数：program_code(可选), location(可选), fiscal_year(可选)
+    返回：指定项目的 QWS / 预算 / BOL更新记录 / 实测CT换算 多种BOL并排对比，按工艺分组
+    """
+
+    def get(self, request, *args, **kwargs):
+        program_code = _qstr(request, 'program_code')
+        location = _qstr(request, 'location')
+        fiscal_year = _qint(request, 'fiscal_year')
+
+        # === BOL 更新记录（hrdb 库）：final_approve_status='Approved'，按 program+process+line_nr 取最新 ===
+        dyn_qs = BolOverView.objects.filter(final_approve_status='Approved')
+        if program_code:
+            dyn_qs = dyn_qs.filter(program_code=program_code)
+        if location:
+            dyn_qs = dyn_qs.filter(location=location)
+        dyn_qs = dyn_qs.order_by('-submit_date')
+        dyn_map = {}
+        for r in dyn_qs.values(
+            'program_code', 'process', 'line_nr', 'bol', 'qws_bol', 'ct', 'hc', 'oee',
+        ):
+            key = _line_key(r['program_code'], r['process'], r['line_nr'])
+            if key not in dyn_map:
+                dyn_map[key] = {
+                    'qws_bol': _f(r['qws_bol']),
+                    'latest_bol': _f(r['bol']),
+                    'hc': _f(r['hc']),
+                    'oee': _f(r['oee']),
+                }
+
+        # === 预算 BOL（default 库）：按 fiscal_year 和 program_code 过滤，未传 fiscal_year 则取最新财年 ===
+        budget_qs = BudgetBol.objects.all()
+        if program_code:
+            budget_qs = budget_qs.filter(program_code=program_code)
+        if location:
+            budget_qs = budget_qs.filter(location=location)
+        if fiscal_year:
+            budget_qs = budget_qs.filter(fiscal_year=fiscal_year)
+        else:
+            latest_fy = BudgetBol.objects.order_by('-fiscal_year').values_list(
+                'fiscal_year', flat=True
+            ).first()
+            if latest_fy is not None:
+                budget_qs = budget_qs.filter(fiscal_year=latest_fy)
+        budget_map = {}
+        for r in budget_qs.values('program_code', 'process', 'line_nr', 'bol'):
+            key = _line_key(r['program_code'], r['process'], r['line_nr'])
+            if key not in budget_map:
+                budget_map[key] = _f(r['bol'])
+
+        # === 瓶颈 CT（hrdb 库）：按 program_code 过滤，按 program+line_nr 取最新 ===
+        bn_qs = BottleNeckCt.objects.all()
+        if program_code:
+            bn_qs = bn_qs.filter(program_code=program_code)
+        bn_qs = bn_qs.order_by('-update_time')
+        bn_map = {}
+        for r in bn_qs.values(
+            'program_code', 'line_nr', 'cycle_time_bottleneck', 'update_time',
+        ):
+            # BottleNeckCt 无 process 字段，按 program+line_nr 关联
+            bn_key = (r['program_code'] or '', (r['line_nr'] or '').strip())
+            if bn_key not in bn_map:
+                bn_map[bn_key] = {
+                    'bottleneck_ct': _f(r['cycle_time_bottleneck']),
+                    'update_time': r['update_time'],
+                }
+
+        # === Python 层合并（绝不在SQL层JOIN）===
+        all_keys = set(dyn_map) | set(budget_map)
+        items = []
+        for key in all_keys:
+            program_code_, process, line_nr = key
+            dyn = dyn_map.get(key, {})
+            qws_bol = dyn.get('qws_bol')
+            latest_bol = dyn.get('latest_bol')
+            hc = dyn.get('hc')
+            oee = dyn.get('oee')
+            budget_bol = budget_map.get(key)
+            # 瓶颈CT按 program+line_nr 关联
+            bn_info = bn_map.get((program_code_, line_nr), {})
+            bottleneck_ct = bn_info.get('bottleneck_ct')
+
+            # 用BolOverView的hc和oee，结合BottleNeckCt的cycle_time_bottleneck，计算 estimated_bol_from_ct
+            estimated_bol_from_ct = None
+            if bottleneck_ct is not None and hc is not None and oee is not None:
+                estimated_bol_from_ct = calc_bol(bottleneck_ct, hc, oee)
+
+            # gap = latest - 基准（正值表示实际高于基准）
+            gap_qws_vs_latest = None
+            if latest_bol is not None and qws_bol is not None:
+                gap_qws_vs_latest = calc_bol_gap(latest_bol, qws_bol)
+            gap_budget_vs_latest = None
+            if latest_bol is not None and budget_bol is not None:
+                gap_budget_vs_latest = calc_bol_gap(latest_bol, budget_bol)
+
+            items.append({
+                'process': process,
+                'line_nr': line_nr,
+                'qws_bol': qws_bol,
+                'budget_bol': budget_bol,
+                'latest_bol': latest_bol,
+                'bottleneck_ct': bottleneck_ct,
+                'estimated_bol_from_ct': estimated_bol_from_ct,
+                'gap_qws_vs_latest': gap_qws_vs_latest,
+                'gap_budget_vs_latest': gap_budget_vs_latest,
+            })
+        items.sort(key=lambda x: (x['process'], x['line_nr']))
+        return Response({
+            'program_code': program_code,
+            'items': items,
+        })
+
+
+# ============================================================
+# 2. 年度趋势分析
+# ============================================================
+class AnnualTrendView(APIView):
+    """GET /api/analytics/annual-trend/
+
+    查询参数：program_code(必填), process(可选)
+    返回：该项目 Budget BOL 按财年升序的时间序列
+    """
+
+    def get(self, request, *args, **kwargs):
+        program_code = _qstr(request, 'program_code')
+        process = _qstr(request, 'process')
+        if not program_code:
+            return Response(
+                {'detail': 'program_code is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = BudgetBol.objects.filter(program_code=program_code)
+        if process:
+            qs = qs.filter(process=process)
+        # 按财年升序，同财年内取最新版本（version 倒序）
+        qs = qs.order_by('fiscal_year', '-version')
+        trend = []
+        seen_fy = set()
+        for r in qs.values('fiscal_year', 'bol'):
+            fy = r['fiscal_year']
+            if fy in seen_fy:
+                continue
+            seen_fy.add(fy)
+            trend.append({'fiscal_year': fy, 'bol': _f(r['bol'])})
+        return Response({
+            'program_code': program_code,
+            'process': process,
+            'trend': trend,
+        })
+
+
+# ============================================================
+# 3. 实测CT佐证分析（原 sensor-validation 改名）
+# ============================================================
+class CtValidationView(APIView):
+    """GET /api/analytics/ct-validation/
+
+    查询参数：program_code(可选), location(可选), days(可选,默认30)
+    返回：BOL更新记录的CT vs 实测瓶颈CT差异分析
+    """
+
+    def get(self, request, *args, **kwargs):
+        program_code = _qstr(request, 'program_code')
+        location = _qstr(request, 'location')
+        days = _qint(request, 'days', default=30)
+
+        # === BOL 更新记录（hrdb 库）：每个 program+process+line_nr 取最新已批准 ===
+        dyn_qs = BolOverView.objects.filter(final_approve_status='Approved')
+        if program_code:
+            dyn_qs = dyn_qs.filter(program_code=program_code)
+        if location:
+            dyn_qs = dyn_qs.filter(location=location)
+        dyn_qs = dyn_qs.order_by('-submit_date')
+        dyn_map = {}
+        for r in dyn_qs.values(
+            'program_code', 'process', 'line_nr', 'ct', 'hc', 'oee', 'bol', 'submit_date',
+        ):
+            key = _line_key(r['program_code'], r['process'], r['line_nr'])
+            if key not in dyn_map:
+                dyn_map[key] = {
+                    'recorded_ct': _f(r['ct']),
+                    'hc': _f(r['hc']),
+                    'oee': _f(r['oee']),
+                    'recorded_bol': _f(r['bol']),
+                    'submit_date': r['submit_date'],
+                }
+
+        # === 瓶颈 CT（hrdb 库）：最近 N 天，按 program+line_nr 取最新 ===
+        date_from = timezone.now() - timedelta(days=days)
+        bn_qs = BottleNeckCt.objects.filter(update_time__gte=date_from)
+        if program_code:
+            bn_qs = bn_qs.filter(program_code=program_code)
+        bn_qs = bn_qs.order_by('-update_time')
+        bn_map = {}
+        for r in bn_qs.values(
+            'program_code', 'line_nr', 'cycle_time_bottleneck', 'update_time',
+        ):
+            bn_key = (r['program_code'] or '', (r['line_nr'] or '').strip())
+            if bn_key not in bn_map:
+                bn_map[bn_key] = {
+                    'bottleneck_ct': _f(r['cycle_time_bottleneck']),
+                    'update_time': r['update_time'],
+                }
+
+        # === Python 层合并 ===
+        items = []
+        for key, info in dyn_map.items():
+            program_code_, process, line_nr = key
+            bn_info = bn_map.get((program_code_, line_nr), {})
+            bottleneck_ct = bn_info.get('bottleneck_ct')
+            recorded_ct = info['recorded_ct']
+            hc = info['hc']
+            oee = info['oee']
+            recorded_bol = info['recorded_bol']
+
+            # ct_diff = bottleneck_ct - recorded_ct
+            ct_diff = None
+            ct_diff_pct = None
+            if bottleneck_ct is not None and recorded_ct is not None:
+                ct_diff = round(bottleneck_ct - recorded_ct, 4)
+                if recorded_ct != 0:
+                    ct_diff_pct = round(ct_diff / recorded_ct * 100, 2)
+
+            # estimated_bol = calc_bol(bottleneck_ct, hc, oee)
+            estimated_bol = None
+            if bottleneck_ct is not None and hc is not None and oee is not None:
+                estimated_bol = calc_bol(bottleneck_ct, hc, oee)
+
+            # bol_diff = estimated_bol - recorded_bol
+            bol_diff = None
+            if estimated_bol is not None and recorded_bol is not None:
+                bol_diff = round(estimated_bol - recorded_bol, 4)
+
+            # update_time 取瓶颈CT的更新时间，回退到 BOL 记录的 submit_date
+            ut = bn_info.get('update_time') or info.get('submit_date')
+            update_time_str = ut.date().isoformat() if ut else None
+
+            items.append({
+                'program_code': program_code_,
+                'process': process,
+                'line_nr': line_nr,
+                'recorded_ct': recorded_ct,
+                'bottleneck_ct': bottleneck_ct,
+                'ct_diff': ct_diff,
+                'ct_diff_pct': ct_diff_pct,
+                'recorded_bol': recorded_bol,
+                'estimated_bol': estimated_bol,
+                'bol_diff': bol_diff,
+                'update_time': update_time_str,
+            })
+        items.sort(key=lambda x: (x['program_code'], x['process'], x['line_nr']))
+        return Response({'items': items})
+
+
+# ============================================================
+# 4. 成本影响测算
+# ============================================================
+class CostImpactView(APIView):
+    """GET /api/analytics/cost-impact/
+
+    查询参数：location(可选), program_code(可选)
+    返回：各项目BOL差异导致的人力成本损失排序（按 cost_gap 降序）
+    """
+
+    def get(self, request, *args, **kwargs):
+        program_code = _qstr(request, 'program_code')
+        location = _qstr(request, 'location')
+
+        # === BOL 更新记录（hrdb 库）：Approved，按 program+process 取最新 ===
+        dyn_qs = BolOverView.objects.filter(final_approve_status='Approved')
+        if program_code:
+            dyn_qs = dyn_qs.filter(program_code=program_code)
+        if location:
+            dyn_qs = dyn_qs.filter(location=location)
+        dyn_qs = dyn_qs.order_by('-submit_date')
+
+        labor_rate = DEFAULT_LABOR_RATE
+        seen = set()
+        items = []
+        for r in dyn_qs.values(
+            'program_code', 'program_name', 'process', 'bol', 'qws_bol', 'peak_volume',
+        ):
+            key = _pp_key(r['program_code'], r['process'])
+            if key in seen:
+                continue
+            seen.add(key)
+            latest_bol = _f(r['bol'])
+            qws_bol = _f(r['qws_bol'])
+            annual_volume = _f(r['peak_volume'])
+            if annual_volume is None:
+                annual_volume = 0.0
+            bol_gap = None
+            cost_gap = 0.0
+            loss = False
+            if latest_bol is not None and qws_bol is not None:
+                # bol_gap = latest - QWS（正值=超QWS=损失）
+                bol_gap = calc_bol_gap(latest_bol, qws_bol)
+                cost_gap = calc_labor_cost_gap(bol_gap, annual_volume, labor_rate)
+                loss = bol_gap > 0
+            items.append({
+                'program_code': r['program_code'] or '',
+                'program_name': r['program_name'] or '',
+                'process': r['process'] or '',
+                'qws_bol': qws_bol,
+                'latest_bol': latest_bol,
+                'bol_gap': bol_gap,
+                'annual_volume': annual_volume,
+                'labor_rate': labor_rate,
+                'cost_gap': cost_gap,
+                'loss': loss,
+            })
+        items.sort(key=lambda x: x['cost_gap'], reverse=True)
+        return Response({'items': items})
+
+
+# ============================================================
+# 5. 高BOL项目预警
+# ============================================================
+class HighBolAlertView(APIView):
+    """GET /api/analytics/high-bol-alert/
+
+    查询参数：threshold(可选,默认0,即 gap>0), location(可选)
+    返回：识别 QWS<实际 或 Budget<实际 的项目，按 cost_gap 降序
+    """
+
+    def get(self, request, *args, **kwargs):
+        threshold = _qfloat(request, 'threshold', default=0.0)
+        location = _qstr(request, 'location')
+
+        # === BOL 更新记录（hrdb 库）：Approved，按 program+process 取最新 ===
+        dyn_qs = BolOverView.objects.filter(final_approve_status='Approved')
+        if location:
+            dyn_qs = dyn_qs.filter(location=location)
+        dyn_qs = dyn_qs.order_by('-submit_date')
+        dyn_map = {}
+        for r in dyn_qs.values(
+            'program_code', 'program_name', 'process', 'bol', 'qws_bol', 'peak_volume',
+        ):
+            key = _pp_key(r['program_code'], r['process'])
+            if key not in dyn_map:
+                dyn_map[key] = {
+                    'program_code': r['program_code'] or '',
+                    'program_name': r['program_name'] or '',
+                    'process': r['process'] or '',
+                    'current_bol': _f(r['bol']),
+                    'target_bol': _f(r['qws_bol']),
+                    'annual_volume': _f(r['peak_volume']) or 0.0,
+                }
+
+        # === 已存在跟踪记录（default 库）：用于标记 already_tracking ===
+        tracking_keys = set()
+        if dyn_map:
+            program_codes = {k[0] for k in dyn_map.keys() if k[0]}
+            if program_codes:
+                tracking_qs = HighBolTracking.objects.filter(
+                    program_code__in=list(program_codes)
+                )
+                for r in tracking_qs.values('program_code', 'process'):
+                    tracking_keys.add(_pp_key(r['program_code'], r['process']))
+
+        labor_rate = DEFAULT_LABOR_RATE
+        items = []
+        for key, info in dyn_map.items():
+            current_bol = info['current_bol']
+            target_bol = info['target_bol']
+            if current_bol is None or target_bol is None:
+                continue
+            # bol_gap = 当前 - 目标（QWS）；正值表示超标
+            bol_gap = calc_bol_gap(current_bol, target_bol)
+            if bol_gap <= threshold:
+                continue
+            cost_gap = calc_labor_cost_gap(bol_gap, info['annual_volume'], labor_rate)
+            items.append({
+                'program_code': info['program_code'],
+                'program_name': info['program_name'],
+                'process': info['process'],
+                'issue_type': 'QWS_GAP',
+                'current_bol': current_bol,
+                'target_bol': target_bol,
+                'bol_gap': bol_gap,
+                'annual_volume': info['annual_volume'],
+                'cost_gap': cost_gap,
+                'already_tracking': key in tracking_keys,
+            })
+        items.sort(key=lambda x: x['cost_gap'], reverse=True)
+        return Response({'items': items})
+
+
+# ============================================================
+# 6. 综合看板概览
+# ============================================================
+class DashboardView(APIView):
+    """GET /api/analytics/dashboard/
+
+    无查询参数。返回首页看板汇总统计、按地点/工艺分组、最近5条跟踪记录。
+    """
+
+    def get(self, request, *args, **kwargs):
+        # === 汇总统计 ===
+        total_programs = ProgramInfo.objects.count()
+        total_bol_records = BolOverView.objects.count()
+        total_budget_records = BudgetBol.objects.count()
+        total_ct_records = RealCtExtract.objects.count()
+        total_tracking_open = HighBolTracking.objects.filter(
+            status__in=['OPEN', 'IN_PROGRESS'],
+        ).count()
+        cost_sum_agg = HighBolTracking.objects.filter(
+            status__in=['OPEN', 'IN_PROGRESS'],
+        ).aggregate(total=Sum('cost_gap'))
+        total_cost_gap = _f(cost_sum_agg.get('total')) or 0.0
+
+        # === 按地点统计 ===
+        # BolOverView 按 location 分组取 avg(bol) 和 distinct program 数（hrdb 库）
+        dyn_by_loc = BolOverView.objects.values('location').annotate(
+            avg_bol=Avg('bol'),
+            program_count=Count('program_code', distinct=True),
+        )
+        # HighBolTracking 按 location 汇总 cost_gap（default 库）
+        tracking_cost_by_loc = {}
+        for r in HighBolTracking.objects.filter(
+            status__in=['OPEN', 'IN_PROGRESS'],
+        ).values('location').annotate(total_cost=Sum('cost_gap')):
+            tracking_cost_by_loc[r['location'] or ''] = _f(r['total_cost']) or 0.0
+        by_location = []
+        for r in dyn_by_loc:
+            loc = r['location'] or ''
+            by_location.append({
+                'location': loc or None,
+                'program_count': r['program_count'],
+                'avg_bol': _f(r['avg_bol']),
+                'cost_gap': tracking_cost_by_loc.get(loc, 0.0),
+            })
+        by_location.sort(key=lambda x: x['cost_gap'], reverse=True)
+
+        # === 按工艺统计（hrdb 库）===
+        proc_qs = BolOverView.objects.values('process').annotate(
+            count=Count('bol_nr'),
+            avg_bol=Avg('bol'),
+        )
+        by_process = [
+            {
+                'process': r['process'] or None,
+                'count': r['count'],
+                'avg_bol': _f(r['avg_bol']),
+            }
+            for r in proc_qs
+        ]
+
+        # === 最近5条高BOL跟踪记录（default 库）===
+        recent_tracking = []
+        for t in HighBolTracking.objects.order_by('-created_at')[:5]:
+            recent_tracking.append({
+                'id': t.id,
+                'program_code': t.program_code,
+                'program_name': t.program_name,
+                'process': t.process,
+                'line_nr': t.line_nr,
+                'issue_type': t.issue_type,
+                'current_bol': _f(t.current_bol),
+                'target_bol': _f(t.target_bol),
+                'bol_gap': _f(t.bol_gap),
+                'cost_gap': _f(t.cost_gap),
+                'status': t.status,
+                'created_at': t.created_at.isoformat() if t.created_at else None,
+            })
+
+        return Response({
+            'summary': {
+                'total_programs': total_programs,
+                'total_bol_records': total_bol_records,
+                'total_budget_records': total_budget_records,
+                'total_ct_records': total_ct_records,
+                'total_tracking_open': total_tracking_open,
+                'total_cost_gap': total_cost_gap,
+            },
+            'by_location': by_location,
+            'by_process': by_process,
+            'recent_tracking': recent_tracking,
+        })

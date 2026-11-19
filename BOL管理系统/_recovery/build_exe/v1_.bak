@@ -1,0 +1,282 @@
+@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+
+REM ============================================================
+REM BOL 管理分析平台 - PyInstaller 一键打包脚本
+REM
+REM 功能：
+REM   1. 构建前端静态文件（npm run build）
+REM   2. 收集 Django 静态文件（collectstatic）
+REM   3. 使用 PyInstaller 生成独立可执行程序
+REM   4. 生成可部署 ZIP 压缩包
+REM
+REM 使用方式：
+REM   build_exe.bat           完整打包流程
+REM   build_exe.bat --skip-fe 跳过前端构建（使用已有 dist）
+REM
+REM 输出：
+REM   backend\dist\BOLServer\         可执行程序目录
+REM   BOLServer-Deploy-Package.zip   可部署压缩包
+REM
+REM 部署方式：
+REM   解压后直接运行 BOLServer.exe --port 8090
+REM   无需安装 Python 或任何依赖
+REM ============================================================
+
+title BOL 管理分析平台 - PyInstaller 打包
+
+REM 系统工具路径
+set "SYS_DIR=%SystemRoot%\System32"
+set "WHERE=%SYS_DIR%\where.exe"
+
+REM 项目路径
+set "ROOT_DIR=%~dp0"
+set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+set "BACKEND_DIR=%ROOT_DIR%\backend"
+set "FRONTEND_DIR=%ROOT_DIR%\frontend"
+set "VENV_PY=%ROOT_DIR%\.venv\Scripts\python.exe"
+
+REM 是否跳过前端构建
+set "SKIP_FE=0"
+if /i "%~1"=="--skip-fe" set "SKIP_FE=1"
+
+echo ============================================================
+echo   BOL 管理分析平台 - PyInstaller 一键打包
+echo   跳过前端构建: %SKIP_FE% (0=否, 1=是)
+echo ============================================================
+echo.
+
+REM ============================================================
+REM 步骤 1: 检查环境
+REM ============================================================
+echo [1/5] 检查环境...
+
+REM 检查 Python（优先使用 venv）
+set "PYTHON_EXE="
+if exist "%VENV_PY%" (
+    set "PYTHON_EXE=%VENV_PY%"
+    goto :py_found
+)
+"%WHERE%" python >nul 2>&1
+if not errorlevel 1 (
+    set "PYTHON_EXE=python"
+    goto :py_found
+)
+for %%P in (
+    "C:\Program Files\Python311\python.exe"
+    "C:\Program Files\Python310\python.exe"
+    "C:\Program Files\Python312\python.exe"
+    "C:\Program Files\Python39\python.exe"
+    "C:\Program Files (x86)\Python311\python.exe"
+) do (
+    if exist %%P (
+        set "PYTHON_EXE=%%~P"
+        goto :py_found
+    )
+)
+echo   [错误] 未找到 Python，请安装 Python 3.10+
+pause
+exit /b 1
+
+:py_found
+for /f "tokens=*" %%v in ('"!PYTHON_EXE!" --version 2^>^&1') do set "PY_VER=%%v"
+echo   - %PY_VER%
+echo   - Python: !PYTHON_EXE!
+
+REM 检查 PyInstaller
+"!PYTHON_EXE!" -c "import PyInstaller" >nul 2>&1
+if errorlevel 1 (
+    echo   - 安装 PyInstaller...
+    "!PYTHON_EXE!" -m pip install pyinstaller --quiet
+    if errorlevel 1 (
+        echo   [错误] PyInstaller 安装失败
+        pause
+        exit /b 1
+    )
+)
+echo   - PyInstaller 就绪
+
+if "%SKIP_FE%"=="0" (
+    REM 检查 Node.js
+    set "NODE_EXE="
+    "%WHERE%" node >nul 2>&1
+    if not errorlevel 1 (
+        set "NODE_EXE=node"
+        goto :node_found
+    )
+    for %%N in (
+        "C:\Program Files\nodejs\node.exe"
+        "C:\Program Files (x86)\nodejs\node.exe"
+    ) do (
+        if exist %%N (
+            set "NODE_EXE=%%~N"
+            goto :node_found
+        )
+    )
+    echo   [警告] 未找到 Node.js，跳过前端构建（使用已有 dist）
+    set "SKIP_FE=1"
+    goto :node_check_done
+
+    :node_found
+    for /f "tokens=*" %%v in ('"!NODE_EXE!" --version 2^>^&1') do set "NODE_VER=%%v"
+    echo   - Node.js %NODE_VER%
+    :node_check_done
+) else (
+    echo   - 跳过前端构建（--skip-fe）
+)
+echo.
+
+REM ============================================================
+REM 步骤 2: 构建前端
+REM ============================================================
+if "%SKIP_FE%"=="1" (
+    if exist "%FRONTEND_DIR%\dist\index.html" (
+        echo [2/5] 跳过前端构建（使用已有 dist）
+        echo.
+        goto :collect_static
+    )
+    echo [2/5] dist 不存在，需要构建前端
+    set "SKIP_FE=0"
+)
+
+echo [2/5] 构建前端静态文件...
+cd /d "%FRONTEND_DIR%"
+if not exist node_modules (
+    echo   - 安装前端依赖...
+    call npm install --silent
+    if errorlevel 1 (
+        echo   [错误] 前端依赖安装失败
+        pause
+        exit /b 1
+    )
+)
+echo   - 构建前端...
+call npm run build
+if errorlevel 1 (
+    echo   [错误] 前端构建失败
+    pause
+    exit /b 1
+)
+cd /d "%ROOT_DIR%"
+echo   - 前端构建完成
+echo.
+
+REM ============================================================
+REM 步骤 3: 收集静态文件
+REM ============================================================
+:collect_static
+echo [3/5] 收集 Django 静态文件...
+cd /d "%BACKEND_DIR%"
+"!PYTHON_EXE!" manage.py collectstatic --noinput --settings=bol_platform.settings_prod >nul 2>&1
+if errorlevel 1 (
+    echo   [警告] 生产配置收集失败，使用默认配置...
+    "!PYTHON_EXE!" manage.py collectstatic --noinput >nul 2>&1
+)
+echo   - 静态文件收集完成
+echo.
+
+REM ============================================================
+REM 步骤 4: PyInstaller 打包
+REM ============================================================
+echo [4/5] PyInstaller 打包中（可能需要数分钟）...
+cd /d "%BACKEND_DIR%"
+
+REM 清理旧的构建产物
+if exist "dist\BOLServer" rmdir /s /q "dist\BOLServer"
+if exist "build\bol_server" rmdir /s /q "build\bol_server"
+
+"!PYTHON_EXE!" -m PyInstaller bol_server.spec --noconfirm
+if errorlevel 1 (
+    echo   [错误] PyInstaller 打包失败
+    pause
+    exit /b 1
+)
+cd /d "%ROOT_DIR%"
+echo   - 打包完成
+echo.
+
+REM ============================================================
+REM 步骤 5: 生成部署包
+REM ============================================================
+echo [5/5] 生成部署压缩包...
+
+REM 复制 db_config.ini.example 到 exe 目录
+if exist "%BACKEND_DIR%\db_config.ini.example" (
+    copy /Y "%BACKEND_DIR%\db_config.ini.example" "%BACKEND_DIR%\dist\BOLServer\db_config.ini.example" >nul 2>&1
+    echo   - db_config.ini.example copied to exe directory
+)
+
+set "DIST_DIR=%BACKEND_DIR%\dist\BOLServer"
+set "ZIP_FILE=%ROOT_DIR%\..\BOLServer-Deploy-Package.zip"
+
+REM 生成版本信息文件
+(
+echo BOL 管理分析平台 - 独立可执行程序部署包
+echo 打包时间: %DATE% %TIME%
+echo.
+echo [部署方式]
+echo   1. 解压缩包到任意目录
+echo   2. 运行 BOLServer.exe --port 8090
+echo   3. 浏览器访问 http://localhost:8090/
+echo.
+echo [端口配置]
+echo   默认端口: 8090
+echo   自定义端口: BOLServer.exe --port 9000
+echo   监听所有地址: BOLServer.exe --host 0.0.0.0 --port 8090
+echo.
+echo [系统要求]
+echo   - Windows Server 2016+ 或 Windows 10/11
+echo   - ODBC Driver 17 for SQL Server（需预装）
+echo   - 无需安装 Python 或任何依赖
+echo   - 能够访问 SQL Server（HRDB 和 CMC 数据库）
+echo.
+echo [目录结构]
+echo   BOLServer\
+echo     BOLServer.exe              可执行程序
+echo     _internal\                 内部依赖和资源文件
+echo       staticfiles\             Django 静态文件
+echo       apps\                    业务模块
+echo     db_config.ini.example      数据库配置示例
+echo     README_DEPLOY.txt          本说明文件
+echo.
+echo [运行命令]
+echo   前台运行: BOLServer.exe --port 8090
+echo   停止服务: 按 Ctrl+C
+echo   后台运行: start /b BOLServer.exe --port 8090
+echo.
+echo [注意事项]
+echo   1. 首次运行可能较慢（解压内部资源）
+echo   2. 防火墙需放行对应端口
+echo   3. 如需后台服务，可使用 NSSM 注册为 Windows 服务
+echo   4. 数据库连接配置参考 db_config.ini.example
+) > "%DIST_DIR%\README_DEPLOY.txt"
+
+REM 压缩
+if exist "%ZIP_FILE%" del /q "%ZIP_FILE%"
+powershell -NoProfile -Command "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath '%ZIP_FILE%' -Force"
+
+if exist "%ZIP_FILE%" (
+    for %%F in "%ZIP_FILE%" do set "ZIP_SIZE=%%~zF"
+    set /a "ZIP_MB=!ZIP_SIZE! / 1048576"
+    echo   - 部署包已生成: %ZIP_FILE%
+    echo   - 大小: !ZIP_MB! MB
+) else (
+    echo   [警告] 压缩包生成失败
+)
+
+cd /d "%ROOT_DIR%"
+echo.
+echo ============================================================
+echo   打包完成!
+echo.
+echo   可执行程序: %DIST_DIR%\BOLServer.exe
+echo   部署压缩包: %ZIP_FILE%
+echo.
+echo   本地测试: cd backend\dist\BOLServer ^&^& BOLServer.exe --port 8090
+echo   部署方式: 解压 ZIP 后运行 BOLServer.exe --port 8090
+echo ============================================================
+echo.
+pause
+
+endlocal

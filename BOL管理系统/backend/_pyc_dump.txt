@@ -1,0 +1,51 @@
+﻿load_module returns 8 items
+python version: (3, 10), timestamp: 1786026275
+======================================================================
+CODE: <module>  args=()
+  consts: ['实测CT数据模型 - 映射 HRDB.CN_IE_CT_ 开头的表（只读）\n\n注意：这些表只采集了 cycle time（CT），并非BOL。\nBOL = CT × HC × (1+1/15) / OEE / 60，需要HC才能计算BOL。\n因此本模块仅提供CT查询，BOL计算需结合BOL更新记录中的HC。\n', 0, ('models',), 'RealCtExtract', 'RealCtExtractPerDay', 'BottleNeckCt', 'CtRealtimeStatus', 'ProjectAcquisition']
+  names: ('__doc__', 'django.db', 'models', 'Model', 'RealCtExtract', 'RealCtExtractPerDay', 'BottleNeckCt', 'CtRealtimeStatus', 'ProjectAcquisition')
+  CODE: RealCtExtract  args=()
+    consts: ['RealCtExtract', '\n    实测CT提取数据（HRDB 只读，对应 CN_IE_CT_realCT_extract）\n    工位级别的实测cycle time，77000+条记录\n    ', True, ('primary_key',), 5, '公司', ('max_length', 'blank', 'verbose_name'), 50, 'projectName', '项目名称', ('max_length', 'blank', 'db_column', 'verbose_name'), 30, 'projectCode', '项目代码', ('max_length', 'db_column', 'verbose_name'), 'lineNr', '产线编号', 'stationNr', '工位编号', 10, 2, 'cycleTime', '实测CT(秒)', ('max_digits', 'decimal_places', 'null', 'blank', 'db_column', 'verbose_name'), 0, '采样次数', ('default', 'verbose_name'), 'updateTime', '更新时间', ('null', 'blank', 'db_column', 'verbose_name'), 'Meta', 'RealCtExtract.__str__']
+    names: ('__name__', '__module__', '__qualname__', '__doc__', 'models', 'BigAutoField', 'id', 'CharField', 'company', 'project_name', 'project_code', 'line_nr', 'station_nr', 'DecimalField', 'cycle_time', 'IntegerField', 'count', 'DateTimeField', 'update_time', 'Meta', '__str__')
+    CODE: Meta  args=()
+      consts: ['RealCtExtract.Meta', False, 'CN_IE_CT_realCT_extract', 'actual_ct', '实测CT(工位级)', '-update_time']
+      names: ('__name__', '__module__', '__qualname__', 'managed', 'db_table', 'app_label', 'verbose_name', 'verbose_name_plural', 'ordering')
+    CODE: __str__  args=('self',)
+      consts: ['/', ' CT=', 's']
+      names: ('project_code', 'line_nr', 'station_nr', 'cycle_time')
+  CODE: RealCtExtractPerDay  args=()
+    consts: ['RealCtExtractPerDay', '\n    按天的实测CT数据（HRDB 只读，对应 CN_IE_CT_realCT_extract_perDay）\n    12000+条记录，按 startTime 聚合\n    ', True, ('primary_key',), 5, '公司', ('max_length', 'blank', 'verbose_name'), 50, 'projectName', '项目名称', ('max_length', 'blank', 'db_column', 'verbose_name'), 30, 'projectCode', '项目代码', ('max_length', 'db_column', 'verbose_name'), 'lineNr', '产线编号', 'stationNr', '工位编号', 10, 2, 'cycleTime', '实测CT(秒)', ('max_digits', 'decimal_places', 'null', 'blank', 'db_column', 'verbose_name'), 'startTime', '采集日期', ('db_column', 'verbose_name'), 'updateTime', '更新时间', ('null', 'blank', 'db_column', 'verbose_name'), 'Meta', 'RealCtExtractPerDay.__str__']
+    names: ('__name__', '__module__', '__qualname__', '__doc__', 'models', 'BigAutoField', 'id', 'CharField', 'company', 'project_name', 'project_code', 'line_nr', 'station_nr', 'DecimalField', 'cycle_time', 'DateField', 'start_time', 'DateTimeField', 'update_time', 'Meta', '__str__')
+    CODE: Meta  args=()
+      consts: ['RealCtExtractPerDay.Meta', False, 'CN_IE_CT_realCT_extract_perDay', 'actual_ct', '实测CT(按天)', '-start_time', '-update_time']
+      names: ('__name__', '__module__', '__qualname__', 'managed', 'db_table', 'app_label', 'verbose_name', 'verbose_name_plural', 'ordering')
+    CODE: __str__  args=('self',)
+      consts: ['/', ' ', ' CT=', 's']
+      names: ('project_code', 'line_nr', 'station_nr', 'start_time', 'cycle_time')
+  CODE: BottleNeckCt  args=()
+    consts: ['BottleNeckCt', '\n    瓶颈工位CT列表（HRDB 只读，对应 CN_IE_CT_bottleNeck_list）\n    10000+条记录，每个项目产线的瓶颈工位cycle time\n    ', True, ('primary_key',), 5, '公司', ('max_length', 'blank', 'verbose_name'), 50, 'projectName', '项目名称', ('max_length', 'blank', 'db_column', 'verbose_name'), 30, 'projectCode', '项目代码', ('max_length', 'db_column', 'verbose_name'), 'lineNr', '产线编号', 10, 2, 'cycleTime_bottleNeck', '瓶颈CT(秒)', ('max_digits', 'decimal_places', 'null', 'blank', 'db_column', 'verbose_name'), 'updateTime', '更新时间', ('null', 'blank', 'db_column', 'verbose_name'), 'Meta', 'BottleNeckCt.__str__']
+    names: ('__name__', '__module__', '__qualname__', '__doc__', 'models', 'BigAutoField', 'id', 'CharField', 'company', 'project_name', 'project_code', 'line_nr', 'DecimalField', 'cycle_time_bottleneck', 'DateTimeField', 'update_time', 'Meta', '__str__')
+    CODE: Meta  args=()
+      consts: ['BottleNeckCt.Meta', False, 'CN_IE_CT_bottleNeck_list', 'actual_ct', '瓶颈工位CT', '-update_time']
+      names: ('__name__', '__module__', '__qualname__', 'managed', 'db_table', 'app_label', 'verbose_name', 'verbose_name_plural', 'ordering')
+    CODE: __str__  args=('self',)
+      consts: ['/', ' 瓶颈CT=', 's']
+      names: ('project_code', 'line_nr', 'cycle_time_bottleneck')
+  CODE: CtRealtimeStatus  args=()
+    consts: ['CtRealtimeStatus', '产线实时状态（HRDB 只读，对应 CN_IE_CT_Realtime_status）', True, ('primary_key',), 10, '公司', ('max_length', 'verbose_name'), 'lineNr', '产线编号', ('max_length', 'db_column', 'verbose_name'), 20, 'projectCode', '项目代码', 5, '状态', ('max_length', 'blank', 'verbose_name'), 'Meta', 'CtRealtimeStatus.__str__']
+    names: ('__name__', '__module__', '__qualname__', '__doc__', 'models', 'BigAutoField', 'id', 'CharField', 'company', 'line_nr', 'project_code', 'state', 'Meta', '__str__')
+    CODE: Meta  args=()
+      consts: ['CtRealtimeStatus.Meta', False, 'CN_IE_CT_Realtime_status', 'actual_ct', '产线实时状态']
+      names: ('__name__', '__module__', '__qualname__', 'managed', 'db_table', 'app_label', 'verbose_name', 'verbose_name_plural')
+    CODE: __str__  args=('self',)
+      consts: ['/', ' ']
+      names: ('company', 'line_nr', 'state')
+  CODE: ProjectAcquisition  args=()
+    consts: ['ProjectAcquisition', '项目采集配置表（HRDB 只读，对应 CN_IE_realTime_projects_acquisition）\n\n    136条记录，包含工厂/产线/项目代号/项目名称等采集配置信息。\n    用于级联筛选器快速查询，替代 OPE 远程视图（V_fact_cn_realTimeCT_overView），\n    避免每次筛选都连接远程数据仓库，显著提升响应速度。\n    ', True, ('primary_key',), 10, '公司', ('max_length', 'verbose_name'), 30, 'projectCode', '项目代码', ('max_length', 'db_column', 'verbose_name'), 50, 'projectName', '项目名称', 'lineNr', '产线编号', '状态', ('null', 'blank', 'verbose_name'), 'updateDate', '更新日期', ('null', 'blank', 'db_column', 'verbose_name'), 'userName', '用户名', ('max_length', 'blank', 'db_column', 'verbose_name'), '修订ID', 'Meta', 'ProjectAcquisition.__str__']
+    names: ('__name__', '__module__', '__qualname__', '__doc__', 'models', 'BigAutoField', 'id', 'CharField', 'company', 'project_code', 'project_name', 'line_nr', 'BooleanField', 'status', 'DateTimeField', 'update_date', 'user_name', 'IntegerField', 'revised_id', 'Meta', '__str__')
+    CODE: Meta  args=()
+      consts: ['ProjectAcquisition.Meta', False, 'CN_IE_realTime_projects_acquisition', 'actual_ct', '项目采集配置']
+      names: ('__name__', '__module__', '__qualname__', 'managed', 'db_table', 'app_label', 'verbose_name', 'verbose_name_plural')
+    CODE: __str__  args=('self',)
+      consts: ['/']
+      names: ('company', 'project_code', 'line_nr')

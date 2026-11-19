@@ -1,0 +1,6 @@
+[
+  ["set", "viewport", "1440", "900", "2"],
+  ["open", "http://127.0.0.1:8090/login"],
+  ["wait", "--load", "networkidle"],
+  ["screenshot", "--full", "--screenshot-dir", "c:/WorkFile/D/OPEX/04-Digital_development/2026/IE系统完善开发/BOL管理系统/screenshots", "--screenshot-format", "png"]
+]

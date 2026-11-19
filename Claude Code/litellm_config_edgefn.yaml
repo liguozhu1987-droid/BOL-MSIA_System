@@ -1,0 +1,6 @@
+model_list:
+  - model_name: deepseek-v3
+    litellm_params:
+      model: openai/deepseek-v3.2
+      api_key: "sk-RIfE7nc3oI4woVeTA8A24e80E15b4e4d8c516855123b5b19"
+      api_base: "https://api.edgefn.net/v1"

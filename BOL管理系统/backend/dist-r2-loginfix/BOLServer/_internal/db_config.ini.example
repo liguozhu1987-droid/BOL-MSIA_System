@@ -1,0 +1,120 @@
+; BOL 管理分析平台 - 数据库连接配置文件
+;
+; 使用方法：
+;   1. 复制本文件为 db_config.ini
+;   2. 修改以下参数为实际值
+;   3. 将 db_config.ini 放置在以下任一位置：
+;      - PyInstaller 打包环境：BOLServer.exe 同目录
+;      - 普通部署环境：backend 目录
+;   4. 或通过环境变量 BOL_DB_CONFIG 指定路径
+;
+; 注意：如不创建 db_config.ini，系统将使用 settings.py 中的默认值（不含口令），
+;       必须先按本模板创建配置并填写数据库口令才能正常连接
+
+[database]
+; SQL Server 服务器地址（含端口）—— 部署时替换为实际地址
+host = your-sqlserver-host,1433
+
+; 数据库用户名 —— 部署时替换为实际账号
+user = your-db-user
+
+; 数据库密码 —— 部署时替换为实际口令，本模板不得填写真实口令
+password = CHANGE_ME
+
+; ODBC 驱动名称（根据服务器已安装的驱动选择）
+;   常见值：
+;   - ODBC Driver 17 for SQL Server
+;   - ODBC Driver 18 for SQL Server
+;   - SQL Server Native Client 11.0
+;   - SQL Server
+driver = ODBC Driver 18 for SQL Server
+
+; 额外连接参数
+;   TrustServerCertificate=yes  信任服务器证书（避免证书验证错误）
+;   Encrypt=no                  关闭加密（内网环境）
+extra_params = TrustServerCertificate=yes;Encrypt=no;Connection Timeout=30;
+
+[email]
+; 邮件服务器地址（公司内部邮件服务器）
+host = 172.19.253.10
+
+; 邮件服务器端口
+port = 25
+
+; 是否使用 SSL 加密（True/False）
+use_ssl = True
+
+; 是否使用 TLS 加密（True/False，与 SSL 互斥）
+use_tls = False
+
+; 邮箱账号（内部邮件服务器无密码，留空即可）
+user =
+
+; 邮箱密码（无密码留空）
+password =
+
+; 发件人邮箱地址
+from_email = BOL管理系统 <bol-system@inalfa.local>
+
+; 管理员邮箱（接收改善分析报告，多个用逗号分隔）
+; 部署时请修改为实际管理员邮箱地址
+admin_email =
+
+; ============================================================
+; 认证功能开关（方案文档 6.2，双轨期）
+; ============================================================
+[auth]
+; 自助注册开关（R7）：统一身份认证期间关闭，账号由管理员/AD 同步创建
+self_registration_enabled = False
+
+; 本地账密登录双轨开关（P4 单轨切换时置 False，仅保留统一身份登录+游客通道）
+local_auth_enabled = True
+
+; 密码自助服务开关（R14）：置 False 后改密/找回密码/重置密码均返回 403，
+; 密码生命周期移交 Keycloak 控制台
+password_self_service_enabled = True
+
+; 员工状态回写（R8 核心）：每小时从 CN_AME 中央表回写 Employee.status，
+; 中央表停用 -> 本地 INACTIVE 并清除该员工 AuthToken（堵住旧 Token 离职缺口）
+sso_status_sync_enabled = True
+
+; 状态回写频率（小时，最小 1）
+sso_status_sync_hours = 1
+
+; CORS 白名单（逗号分隔）；留空或不写 = 允许全部（内网开发默认）
+; cors_allowed_origins = http://bol.ap.inalfa.local
+
+; ============================================================
+; 统一身份登录（Keycloak OIDC，方案文档第 6 章）
+; Keycloak 未部署完成前 enabled 保持 False，系统行为与改造前完全一致
+; ============================================================
+[oidc]
+; 是否启用统一身份登录（True/False）
+enabled = False
+
+; Keycloak realm issuer（反代地址 + realm 名，必须与 realm 配置一致）
+issuer = https://sso.ap.inalfa.local/realms/inalfa
+
+; OIDC 客户端 ID（Keycloak clients.md：bol-prod）
+client_id = bol-prod
+
+; OIDC 客户端密钥（confidential client secret，在 Keycloak 建好 bol-prod 后填入；
+; 推荐用环境变量 OIDC_CLIENT_SECRET 注入，优先级高于本文件且不落盘）
+client_secret =
+
+; 授权回调地址（必须与 Keycloak bol-prod 的 Valid redirect URIs 精确一致；
+; BOL 对外 URL 待确认——方案文档 U2，暂按 waitress 默认端口占位，
+; 确认后改为实际访问地址，如 http://bol.ap.inalfa.local/api/auth/oidc/callback）
+redirect_uri = http://127.0.0.1:8090/api/auth/oidc/callback
+
+; 前端 OIDC 回调页（后端 302 到此地址并带 ?otk= 一次性码）
+front_callback = /oidc/callback
+
+; 准入组：Keycloak 用户 groups claim 不含该值 -> 403 未开通本系统访问权限
+required_group = app-bol
+
+; 本地员工表未命中时是否自动建档（True=按最低权限 VIEWER 自动创建）
+auto_create_user = True
+
+; OIDC 授权范围
+scopes = openid profile email

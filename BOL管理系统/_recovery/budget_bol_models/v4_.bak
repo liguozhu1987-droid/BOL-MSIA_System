@@ -1,0 +1,225 @@
+# -*- coding: utf-8 -*-
+"""年度预算BOL模型 - CMC库可读写
+
+按用户要求重构为两个独立的模型，表结构与 Excel 完全一致：
+
+1. BudgetBol（对应 Excel "2026 Budget BOL" sheet，7列）
+   - Process Type / Project Code / Asset / Plant
+   - AME Target BOL / Achievable BOL / Budget BOL
+
+2. AchievableTargetBol（对应 Excel "2026 Achievable BOL" 和 "2026 Target BOL" sheet，23列）
+   - Process Type / Project Code / Asset / Plant
+   - Process1~5 CT/HC/Comment（共15列）
+   - OEE / BOL Base / Uplift Indirect Hours / BOL（共4列，但 Achievable 与 Target 顺序不同）
+   - 通过 bol_type 字段区分 ACHIEVABLE / TARGET
+
+导入逻辑：纯导入 Excel 内容，不与任何表关联查询；
+Plant 列原值直接存储为 location 字段；
+Process Type 列只存 FA/IHR/IHE 等，子工艺数据通过 process1~5 列存储。
+每行 Excel = 一条数据库记录，不再拆分。
+"""
+from django.db import models
+
+
+class BudgetBol(models.Model):
+    """Budget BOL 表（对应 Excel "2026 Budget BOL" sheet，7列结构）
+
+    表结构与 Excel 完全一致，仅存储 Excel 中的 7 列数据：
+    - Process Type / Project Code / Asset / Plant
+    - AME Target BOL / Achievable BOL / Budget BOL
+    """
+    # BOL 类型常量（仅 BUDGET 类型使用此表）
+    TYPE_BUDGET = 'BUDGET'
+    TYPE_CHOICES = [
+        (TYPE_BUDGET, '预算 BOL（直接给定值）'),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    fiscal_year = models.IntegerField(verbose_name='财年')
+    bol_type = models.CharField(max_length=20, choices=TYPE_CHOICES,
+                                default=TYPE_BUDGET, verbose_name='BOL类型')
+
+    # Excel 7列字段（与 sheet "2026 Budget BOL" 完全一致）
+    process_type = models.CharField(max_length=30, blank=True, default='',
+                                    verbose_name='工艺类型',
+                                    help_text='Excel 第1列 Process Type（FA/IHR/IHE 等）')
+    project_code = models.CharField(max_length=30, verbose_name='项目代码',
+                                    help_text='Excel 第2列 Project Code')
+    asset = models.CharField(max_length=30, blank=True, default='',
+                             verbose_name='产线编号',
+                             help_text='Excel 第3列 Asset')
+    plant = models.CharField(max_length=30, blank=True, default='',
+                             verbose_name='工厂',
+                             help_text='Excel 第4列 Plant（原值直接存储）')
+    ame_target_bol = models.DecimalField(max_digits=12, decimal_places=4,
+                                         null=True, blank=True,
+                                         verbose_name='AME目标BOL',
+                                         help_text='Excel 第5列 AME Target BOL')
+    achievable_bol = models.DecimalField(max_digits=12, decimal_places=4,
+                                         null=True, blank=True,
+                                         verbose_name='可达BOL(参考)',
+                                         help_text='Excel 第6列 Achievable BOL')
+    budget_bol = models.DecimalField(max_digits=12, decimal_places=4,
+                                     null=True, blank=True,
+                                     verbose_name='预算BOL',
+                                     help_text='Excel 第7列 Budget BOL')
+
+    # 系统字段
+    created_by = models.CharField(max_length=50, blank=True, default='',
+                                  verbose_name='创建人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        managed = True
+        db_table = 'CN_IE_BOL_BudgetBol'
+        app_label = 'budget_bol'
+        verbose_name = 'Budget BOL（预算BOL）'
+        verbose_name_plural = verbose_name
+        # 不设置 unique_together：导入时先清空再全量导入，Excel 中可能有重复行
+        ordering = ['-fiscal_year', 'project_code', 'process_type']
+
+    def __str__(self):
+        return f"{self.fiscal_year} Budget {self.project_code} {self.process_type}"
+
+
+class AchievableTargetBol(models.Model):
+    """Achievable BOL / Target BOL 表（对应 Excel 23列结构）
+
+    对应 Excel "2026 Achievable BOL" 和 "2026 Target BOL" 两个 sheet。
+    两个 sheet 的列结构基本一致（23列），仅最后4列顺序略有差异：
+    - Achievable: OEE(20) → BOL Base(21) → Uplift Indirect Hours(22) → BOL(mins)(23)
+    - Target:     BOL Base(20) → Uplift Indirect Hours(21) → OEE(22) → BOL(minutes)(23)
+
+    导入时按 bol_type 选择对应的列顺序读取，存储到统一字段。
+    通过 bol_type 字段区分 ACHIEVABLE / TARGET 两种类型。
+
+    表字段与 Excel 23列一一对应，每行 Excel = 一条数据库记录，不再拆分子工艺。
+    """
+    TYPE_ACHIEVABLE = 'ACHIEVABLE'
+    TYPE_TARGET = 'TARGET'
+    TYPE_CHOICES = [
+        (TYPE_ACHIEVABLE, '可达 BOL（CT/HC 计算）'),
+        (TYPE_TARGET, '目标 BOL（产能规划）'),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    fiscal_year = models.IntegerField(verbose_name='财年')
+    bol_type = models.CharField(max_length=20, choices=TYPE_CHOICES,
+                                verbose_name='BOL类型')
+
+    # ===== Excel 第1~4列：基本信息 =====
+    process_type = models.CharField(max_length=30, blank=True, default='',
+                                    verbose_name='工艺类型',
+                                    help_text='Excel 第1列 Process Type（FA/IHR/IHE 等）')
+    project_code = models.CharField(max_length=30, verbose_name='项目代码',
+                                    help_text='Excel 第2列 Project Code')
+    asset = models.CharField(max_length=30, blank=True, default='',
+                             verbose_name='产线编号',
+                             help_text='Excel 第3列 Asset')
+    plant = models.CharField(max_length=30, blank=True, default='',
+                             verbose_name='工厂',
+                             help_text='Excel 第4列 Plant（原值直接存储）')
+
+    # ===== Excel 第5~7列：子工艺1（主工艺）CT/HC/Comment =====
+    process1_ct = models.DecimalField(max_digits=12, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺1 CT(秒)',
+                                      help_text='Excel 第5列')
+    process1_hc = models.DecimalField(max_digits=10, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺1 HC',
+                                      help_text='Excel 第6列')
+    comment1 = models.CharField(max_length=200, blank=True, default='',
+                                verbose_name='工艺1 备注',
+                                help_text='Excel 第7列')
+
+    # ===== Excel 第8~10列：子工艺2 CT/HC/Comment =====
+    process2_ct = models.DecimalField(max_digits=12, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺2 CT(秒)',
+                                      help_text='Excel 第8列')
+    process2_hc = models.DecimalField(max_digits=10, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺2 HC',
+                                      help_text='Excel 第9列')
+    comment2 = models.CharField(max_length=200, blank=True, default='',
+                                verbose_name='工艺2 备注',
+                                help_text='Excel 第10列')
+
+    # ===== Excel 第11~13列：子工艺3 CT/HC/Comment =====
+    process3_ct = models.DecimalField(max_digits=12, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺3 CT(秒)',
+                                      help_text='Excel 第11列')
+    process3_hc = models.DecimalField(max_digits=10, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺3 HC',
+                                      help_text='Excel 第12列')
+    comment3 = models.CharField(max_length=200, blank=True, default='',
+                                verbose_name='工艺3 备注',
+                                help_text='Excel 第13列')
+
+    # ===== Excel 第14~16列：子工艺4 CT/HC/Comment =====
+    process4_ct = models.DecimalField(max_digits=12, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺4 CT(秒)',
+                                      help_text='Excel 第14列')
+    process4_hc = models.DecimalField(max_digits=10, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺4 HC',
+                                      help_text='Excel 第15列')
+    comment4 = models.CharField(max_length=200, blank=True, default='',
+                                verbose_name='工艺4 备注',
+                                help_text='Excel 第16列')
+
+    # ===== Excel 第17~19列：子工艺5 CT/HC/Comment =====
+    process5_ct = models.DecimalField(max_digits=12, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺5 CT(秒)',
+                                      help_text='Excel 第17列')
+    process5_hc = models.DecimalField(max_digits=10, decimal_places=4,
+                                      null=True, blank=True,
+                                      verbose_name='工艺5 HC',
+                                      help_text='Excel 第18列')
+    comment5 = models.CharField(max_length=200, blank=True, default='',
+                                verbose_name='工艺5 备注',
+                                help_text='Excel 第19列')
+
+    # ===== Excel 第20~23列：OEE / BOL Base / Uplift / BOL =====
+    # Achievable 顺序：OEE(20) / BOL Base(21) / Uplift(22) / BOL(23)
+    # Target 顺序：    BOL Base(20) / Uplift(21) / OEE(22) / BOL(23)
+    oee = models.DecimalField(max_digits=6, decimal_places=4,
+                              null=True, blank=True,
+                              verbose_name='OEE',
+                              help_text='Excel 第20列(Achievable) 或 第22列(Target)')
+    bol_base = models.DecimalField(max_digits=12, decimal_places=4,
+                                   null=True, blank=True,
+                                   verbose_name='BOL基准',
+                                   help_text='Excel BOL Base 列')
+    uplift_indirect_hours = models.DecimalField(max_digits=10, decimal_places=4,
+                                                null=True, blank=True,
+                                                verbose_name='间接工时系数',
+                                                help_text='Excel Uplift Indirect Hours 列')
+    bol = models.DecimalField(max_digits=12, decimal_places=4,
+                              null=True, blank=True,
+                              verbose_name='BOL值(分钟)',
+                              help_text='Excel 最后一列 BOL(mins) 或 BOL(minutes)')
+
+    # 系统字段
+    created_by = models.CharField(max_length=50, blank=True, default='',
+                                  verbose_name='创建人')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        managed = True
+        db_table = 'CN_IE_BOL_AchievableTargetBol'
+        app_label = 'budget_bol'
+        verbose_name = 'Achievable/Target BOL'
+        verbose_name_plural = verbose_name
+        # 不设置 unique_together：导入时先清空再全量导入，Excel 中可能有重复行
+        ordering = ['-fiscal_year', 'project_code', 'process_type']
+
+    def __str__(self):
+        return f"{self.fiscal_year} {self.bol_type} {self.project_code} {self.process_type}"
